@@ -63,7 +63,7 @@ func buildAgent(def Definition, bridge *smcp.Bridge, reg Registry) *agent.AgentI
 		tools[t.Spec().Name] = t
 	}
 
-	return agent.NewAgent(model, tools, cfg, def.Version)
+	return agent.NewAgent(model, tools, cfg, def.Version, def.SystemPrompt)
 }
 
 func (r *AgentRegistry) getDefinition(ctx context.Context, hash string) (Definition, error) {

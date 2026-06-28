@@ -6,6 +6,10 @@ import (
 )
 
 func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) {
+	if a.SystemPrompt != "" && (len(msgs) == 0 || msgs[0].Role != "system") {
+		msgs = append([]Message{{Role: "system", Content: a.SystemPrompt}}, msgs...)
+	}
+
 	for {
 		out, err := a.Model.Complete(ctx, msgs, specs(a.Tools))
 		if err != nil {

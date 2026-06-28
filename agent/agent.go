@@ -37,18 +37,20 @@ type AgentCfg struct {
 }
 
 type AgentInfo struct {
-	Model   Model
-	Tools   map[string]Tool
-	Cfg     AgentCfg
-	Version string
+	Model        Model
+	Tools        map[string]Tool
+	Cfg          AgentCfg
+	Version      string
+	SystemPrompt string
 }
 
-func NewAgent(model Model, tools map[string]Tool, cfg AgentCfg, version string) *AgentInfo {
+func NewAgent(model Model, tools map[string]Tool, cfg AgentCfg, version, systemPrompt string) *AgentInfo {
 	return &AgentInfo{
-		Model:   model,
-		Tools:   tools,
-		Cfg:     cfg,
-		Version: version,
+		Model:        model,
+		Tools:        tools,
+		Cfg:          cfg,
+		Version:      version,
+		SystemPrompt: systemPrompt,
 	}
 }
 
