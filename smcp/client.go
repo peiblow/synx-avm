@@ -9,22 +9,16 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// Bridge é o cliente MCP da AVM contra o synx-mcp (o gate). Ele só obtém a
-// DECISÃO (APPROVED/REJECTED) de uma tool governada. Quem executa efeito
-// externo (a action) é a AVM — synx-control-plane-only: o Synx só decide.
 type Bridge struct {
 	client *mcpclient.SSEMCPClient
 }
 
-// Result é a decisão devolvida pelo gate para uma chamada de tool.
 type Result struct {
 	ContextID string
-	Decision  string          // "APPROVED" | "REJECTED"
-	Raw       json.RawMessage // payload completo, para devolver ao modelo
+	Decision  string
+	Raw       json.RawMessage
 }
 
-// NewBridge conecta no synx-mcp e autentica com a license.
-// url ex: https://mcp.synxhub.com.br/mcp/sse ; license = MCP_LICENSE (JWT EdDSA).
 func NewBridge(ctx context.Context, url, license string) (*Bridge, error) {
 	c, err := mcpclient.NewSSEMCPClient(url, mcpclient.WithHeaders(map[string]string{
 		"Authorization": "Bearer " + license,
@@ -51,12 +45,6 @@ func (b *Bridge) Close() error {
 	return b.client.Close()
 }
 
-// Call propõe a tool ao gate e devolve a decisão. gateName é o nome real da
-// tool no contrato (ex: "credit.decision"). input são os args do LLM.
-//
-// REJECTED volta com IsError=true mas carrega uma decisão — é resultado de
-// negócio legítimo que o modelo precisa ver, então devolvemos como dado.
-// Só erro de transporte / sem decisão é tratado como falha de verdade.
 func (b *Bridge) Call(ctx context.Context, gateName string, input json.RawMessage) (*Result, error) {
 	var args map[string]any
 	if len(input) > 0 {

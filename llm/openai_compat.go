@@ -168,12 +168,16 @@ func toWireTools(tools []agent.ToolsSpec) []chatTool {
 	}
 	out := make([]chatTool, len(tools))
 	for i, t := range tools {
+		params := t.Parameters
+		if len(params) == 0 {
+			params = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
 		out[i] = chatTool{
 			Type: "function",
 			Function: chatToolFunc{
 				Name:        t.Name,
 				Description: t.Description,
-				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+				Parameters:  params,
 			},
 		}
 	}

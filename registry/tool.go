@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/peiblow/avm/agent"
@@ -27,7 +29,11 @@ type contractTool struct {
 
 func newContractTool(def ToolDef, bridge *smcp.Bridge, reg Registry) *contractTool {
 	return &contractTool{
-		spec:     agent.ToolsSpec{Name: sanitizeName(def.Name), Description: def.Description},
+		spec: agent.ToolsSpec{
+			Name:        sanitizeName(def.Name),
+			Description: def.Description,
+			Parameters:  buildInputSchema(def.Steps),
+		},
 		gateName: def.Name,
 		steps:    def.Steps,
 		bridge:   bridge,
@@ -102,7 +108,12 @@ func (t *contractTool) delegate(ctx context.Context, target string, input json.R
 }
 
 func (t *contractTool) executeAction(ctx context.Context, action *ToolAction, input json.RawMessage) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, action.Method, action.Url, bytes.NewReader(input))
+	url, err := resolveURL(action.Url)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, action.Method, url, bytes.NewReader(input))
 	if err != nil {
 		return nil, err
 	}
@@ -150,4 +161,55 @@ var nameRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
 func sanitizeName(name string) string {
 	return nameRe.ReplaceAllString(name, "_")
+}
+
+var getEnvRe = regexp.MustCompile(`^getEnv\(([^)]+)\)$`)
+
+func resolveURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	m := getEnvRe.FindStringSubmatch(raw)
+	if m == nil {
+		return raw, nil
+	}
+
+	name := strings.Trim(strings.TrimSpace(m[1]), `"'`)
+	val := os.Getenv(name)
+	if val == "" {
+		return "", fmt.Errorf("env %s not set", name)
+	}
+	return val, nil
+}
+
+func buildInputSchema(steps []ToolStep) json.RawMessage {
+	props := map[string]any{}
+	required := []string{}
+	seen := map[string]bool{}
+
+	for _, s := range steps {
+		for _, in := range s.Input {
+			if seen[in.Name] {
+				continue
+			}
+			seen[in.Name] = true
+			props[in.Name] = map[string]string{"type": jsonType(in.Type)}
+			required = append(required, in.Name)
+		}
+	}
+
+	schema := map[string]any{"type": "object", "properties": props}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+
+	b, _ := json.Marshal(schema)
+	return b
+}
+
+func jsonType(t string) string {
+	switch t {
+	case "UInt", "Int":
+		return "integer"
+	default:
+		return "string"
+	}
 }

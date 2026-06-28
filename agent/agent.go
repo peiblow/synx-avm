@@ -28,6 +28,7 @@ type ToolsSpec struct {
 	Description string
 	Func        string
 	Actions     []interface{}
+	Parameters  json.RawMessage
 }
 
 type AgentCfg struct {

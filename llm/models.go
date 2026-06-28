@@ -17,6 +17,7 @@ var Providers = map[string]Provider{
 	"groq":       {Family: "openai-compat", BaseURL: "https://api.groq.com/openai/v1", EnvKey: "GROQ_API_KEY"},
 	"openai":     {Family: "openai-compat", BaseURL: "https://api.openai.com/v1", EnvKey: "OPENAI_API_KEY"},
 	"openrouter": {Family: "openai-compat", BaseURL: "https://openrouter.ai/api/v1", EnvKey: "OPENROUTER_API_KEY"},
+	"anthropic":  {Family: "anthropic", BaseURL: "https://api.anthropic.com", EnvKey: "ANTHROPIC_API_KEY"},
 }
 
 func NewModel(provider, name string, cfg agent.AgentCfg) (agent.Model, error) {
@@ -33,6 +34,8 @@ func NewModel(provider, name string, cfg agent.AgentCfg) (agent.Model, error) {
 	switch p.Family {
 	case "openai-compat":
 		return NewOpenAICompatModel(p.BaseURL, apiKey, name, cfg), nil
+	case "anthropic":
+		return NewAnthropicModel(p.BaseURL, apiKey, name, cfg), nil
 	default:
 		return nil, fmt.Errorf("unsupported family: %s", p.Family)
 	}
