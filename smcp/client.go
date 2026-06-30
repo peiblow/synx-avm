@@ -17,6 +17,18 @@ type Result struct {
 	ContextID string
 	Decision  string
 	Raw       json.RawMessage
+	Steps     []StepResult
+}
+
+type StepResult struct {
+	Function string      `json:"function"`
+	Status   string      `json:"status"`
+	Events   []StepEvent `json:"events"`
+}
+
+type StepEvent struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
 }
 
 func NewBridge(ctx context.Context, url, license string) (*Bridge, error) {
@@ -65,8 +77,9 @@ func (b *Bridge) Call(ctx context.Context, gateName string, input json.RawMessag
 	text := firstText(res.Content)
 
 	var decoded struct {
-		ContextID string `json:"contextId"`
-		Decision  string `json:"decision"`
+		ContextID string       `json:"contextId"`
+		Decision  string       `json:"decision"`
+		Steps     []StepResult `json:"steps"`
 	}
 	_ = json.Unmarshal([]byte(text), &decoded)
 
@@ -78,6 +91,7 @@ func (b *Bridge) Call(ctx context.Context, gateName string, input json.RawMessag
 		ContextID: decoded.ContextID,
 		Decision:  decoded.Decision,
 		Raw:       json.RawMessage(text),
+		Steps:     decoded.Steps,
 	}, nil
 }
 

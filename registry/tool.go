@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -60,9 +63,10 @@ func (t *contractTool) Run(ctx context.Context, input json.RawMessage) (json.Raw
 		var err error
 		switch {
 		case step.Action != nil:
-			out, err = t.executeAction(ctx, step.Action, input)
+			body := bodyForStep(res, step.Function, input)
+			out, err = t.executeAction(ctx, step.Action, input, body)
 			if err != nil {
-				return nil, fmt.Errorf("action %s %s: %w", step.Action.Method, step.Action.Url, err)
+				return nil, fmt.Errorf("action %s: %w", step.Action.Type, err)
 			}
 		case step.Delegate != "":
 			out, err = t.delegate(ctx, step.Delegate, input)
@@ -107,13 +111,50 @@ func (t *contractTool) delegate(ctx context.Context, target string, input json.R
 	return out, nil
 }
 
-func (t *contractTool) executeAction(ctx context.Context, action *ToolAction, input json.RawMessage) (json.RawMessage, error) {
-	url, err := resolveURL(action.Url)
+func bodyForStep(res *smcp.Result, fn string, input json.RawMessage) []byte {
+	for _, s := range res.Steps {
+		if s.Function == fn && len(s.Events) > 0 {
+			return eventBody(s.Events)
+		}
+	}
+	return input
+}
+
+func eventBody(events []smcp.StepEvent) []byte {
+	data := events[len(events)-1].Data
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) == nil && len(obj) == 1 {
+		for _, v := range obj {
+			var s string
+			if json.Unmarshal(v, &s) == nil {
+				return []byte(s)
+			}
+			return v
+		}
+	}
+	return data
+}
+
+func (t *contractTool) executeAction(ctx context.Context, action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
+	switch action.Type {
+	case "http", "":
+		return t.executeHTTP(ctx, action, input, body)
+	case "filesystem":
+		return executeFilesystem(action, input, body)
+	case "shell":
+		return executeShell(ctx, action, input, body)
+	default:
+		return nil, fmt.Errorf("unknown action type: %s", action.Type)
+	}
+}
+
+func (t *contractTool) executeHTTP(ctx context.Context, action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
+	url, err := resolveTemplate(action.Url, input)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, action.Method, url, bytes.NewReader(input))
+	req, err := http.NewRequestWithContext(ctx, action.Method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -125,14 +166,104 @@ func (t *contractTool) executeAction(ctx context.Context, action *ToolAction, in
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 	}
-	return json.RawMessage(body), nil
+	return json.RawMessage(respBody), nil
+}
+
+func executeFilesystem(action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
+	path, err := resolveTemplate(action.Path, input)
+	if err != nil {
+		return nil, err
+	}
+
+	switch action.Operation {
+	case "read":
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsDir() {
+			return readDir(path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]string{"path": path, "content": string(data)})
+	case "write":
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"path": path, "bytes": len(body)})
+	default:
+		return nil, fmt.Errorf("unknown filesystem operation: %s", action.Operation)
+	}
+}
+
+func readDir(root string) (json.RawMessage, error) {
+	type fileEntry struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+
+	var files []fileEntry
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		files = append(files, fileEntry{Path: rel, Content: string(data)})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(map[string]any{"dir": root, "files": files})
+}
+
+func executeShell(ctx context.Context, action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
+	command, err := resolveTemplate(action.Command, input)
+	if err != nil {
+		return nil, err
+	}
+
+	args := make([]string, len(action.Args))
+	for i, a := range action.Args {
+		v, err := resolveTemplate(a, input)
+		if err != nil {
+			return nil, err
+		}
+		args[i] = v
+	}
+
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Stdin = bytes.NewReader(body)
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("shell %s: %w", command, err)
+	}
+	return json.Marshal(map[string]string{"stdout": string(out)})
 }
 
 func combine(decision json.RawMessage, outputs []json.RawMessage) json.RawMessage {
@@ -163,21 +294,36 @@ func sanitizeName(name string) string {
 	return nameRe.ReplaceAllString(name, "_")
 }
 
-var getEnvRe = regexp.MustCompile(`^getEnv\(([^)]+)\)$`)
+var getEnvRe = regexp.MustCompile(`getEnv\(([^)]+)\)`)
+var fieldRe = regexp.MustCompile(`\{([^}]+)\}`)
 
-func resolveURL(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	m := getEnvRe.FindStringSubmatch(raw)
-	if m == nil {
-		return raw, nil
+func resolveTemplate(raw string, input json.RawMessage) (string, error) {
+	var missing string
+	out := getEnvRe.ReplaceAllStringFunc(raw, func(m string) string {
+		name := strings.Trim(strings.TrimSpace(getEnvRe.FindStringSubmatch(m)[1]), `"'`)
+		val := os.Getenv(name)
+		if val == "" {
+			missing = name
+		}
+		return val
+	})
+	if missing != "" {
+		return "", fmt.Errorf("env %s not set", missing)
 	}
 
-	name := strings.Trim(strings.TrimSpace(m[1]), `"'`)
-	val := os.Getenv(name)
-	if val == "" {
-		return "", fmt.Errorf("env %s not set", name)
+	if strings.Contains(out, "{") {
+		var fields map[string]any
+		_ = json.Unmarshal(input, &fields)
+		out = fieldRe.ReplaceAllStringFunc(out, func(m string) string {
+			key := strings.TrimSpace(m[1 : len(m)-1])
+			if v, ok := fields[key]; ok {
+				return fmt.Sprint(v)
+			}
+			return m
+		})
 	}
-	return val, nil
+
+	return out, nil
 }
 
 func buildInputSchema(steps []ToolStep) json.RawMessage {

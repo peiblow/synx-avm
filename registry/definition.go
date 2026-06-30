@@ -44,8 +44,13 @@ type ToolStep struct {
 }
 
 type ToolAction struct {
-	Method string `json:"method"`
-	Url    string `json:"url"`
+	Type      string   `json:"type"`
+	Method    string   `json:"method,omitempty"`
+	Url       string   `json:"url,omitempty"`
+	Operation string   `json:"operation,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
 }
 
 type SkillDef struct {
