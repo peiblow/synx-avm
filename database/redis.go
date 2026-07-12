@@ -49,6 +49,13 @@ func (c *RedisClient) Get(ctx context.Context, key string) (string, error) {
 	return c.Client.Get(ctx, key).Result()
 }
 
+func (c *RedisClient) XAdd(ctx context.Context, stream string, data []byte) (string, error) {
+	return c.Client.XAdd(ctx, &goredis.XAddArgs{
+		Stream: stream,
+		Values: map[string]any{"data": data},
+	}).Result()
+}
+
 func (c *RedisClient) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	return c.Client.Set(ctx, key, value, ttl).Err()
 }

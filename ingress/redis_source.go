@@ -65,6 +65,17 @@ func (s *RedisSource) Consume(ctx context.Context) (Delivery, error) {
 		Ack: func() error {
 			return s.rdb.XAck(ctx, s.Stream, s.Group, msg.ID).Err()
 		},
+		Dead: func(reason string) error {
+			deadData, _ := json.Marshal(map[string]any{
+				"data":      raw,
+				"reason":    reason,
+				"failed_at": time.Now().UTC().UnixMilli(),
+			})
+			if _, err := s.rdb.XAdd(ctx, s.Stream+":dead", deadData); err != nil {
+				return err
+			}
+			return s.rdb.XAck(ctx, s.Stream, s.Group, msg.ID).Err()
+		},
 	}, nil
 }
 

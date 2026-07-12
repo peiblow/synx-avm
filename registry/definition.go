@@ -50,7 +50,10 @@ type ToolAction struct {
 	Operation string   `json:"operation,omitempty"`
 	Path      string   `json:"path,omitempty"`
 	Command   string   `json:"command,omitempty"`
-	Args      []string `json:"args,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Agent     string            `json:"agent,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      string            `json:"body,omitempty"`
 }
 
 type SkillDef struct {

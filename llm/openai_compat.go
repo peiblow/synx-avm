@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/peiblow/avm/agent"
 )
@@ -26,7 +25,7 @@ func NewOpenAICompatModel(baseURL, apiKey, model string, cfg agent.AgentCfg) *Op
 		apiKey:  apiKey,
 		model:   model,
 		cfg:     cfg,
-		http:    &http.Client{Timeout: 60 * time.Second},
+		http:    &http.Client{Timeout: clientTimeout()},
 	}
 }
 

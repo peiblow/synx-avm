@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/peiblow/avm/agent"
 	"github.com/peiblow/avm/registry"
@@ -22,52 +23,60 @@ func NewConsumer(source EventSource, registry registry.Registry) *Consumer {
 }
 
 func (c *Consumer) Start(ctx context.Context, mem agent.Memory) error {
-	fmt.Println("Consumer started")
+	slog.Info("consumer started")
 	for {
 		d, err := c.Source.Consume(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			fmt.Println("Error consuming event:", err)
+			slog.Error("consuming event", "error", err)
 			continue
 		}
 
 		agt, err := c.registry.GetAgent(ctx, d.Event.AgentHash)
 		if err != nil {
-			fmt.Println("Error getting agent:", err)
+			slog.Error("resolving agent", "agent", d.Event.AgentHash, "event", d.Event.EventID, "error", err)
+			deadLetter(d, "agent not found: "+err.Error())
 			continue
 		}
 
 		go func(d Delivery, agt *agent.AgentInfo) {
-			defer func() {
-				if err := d.Ack(); err != nil {
-					fmt.Println("ack failed:", err)
-				}
-			}()
-
 			userMsgs, err := msgsFromEvent(d.Event)
 			if err != nil {
-				fmt.Println("Error building messages:", err)
+				slog.Error("building messages", "event", d.Event.EventID, "error", err)
+				deadLetter(d, err.Error())
 				return
 			}
 
 			prior, _ := mem.Load(ctx, d.Event.ContextID)
 			msgs := append(prior, userMsgs...)
 
-			resp, err := agt.Run(ctx, msgs)
+			runCtx := registry.WithCorrelation(ctx, d.Event.CorrelationID)
+			resp, err := agt.Run(runCtx, msgs)
 			if err != nil {
-				fmt.Println("Error running agent:", err)
+				slog.Error("agent run failed", "agent", d.Event.AgentHash, "event", d.Event.EventID, "error", err)
+				deadLetter(d, err.Error())
 				return
 			}
 
 			mem.Append(ctx, d.Event.ContextID, userMsgs...)
 			mem.Append(ctx, d.Event.ContextID, resp...)
 
-			for _, m := range resp {
-				fmt.Println("Agent response:", m.Content)
+			if err := d.Ack(); err != nil {
+				slog.Error("ack failed", "event", d.Event.EventID, "error", err)
 			}
+			slog.Info("agent turn completed", "agent", d.Event.AgentHash, "event", d.Event.EventID, "correlation", d.Event.CorrelationID)
 		}(d, agt)
+	}
+}
+
+func deadLetter(d Delivery, reason string) {
+	if d.Dead == nil {
+		return
+	}
+	if err := d.Dead(reason); err != nil {
+		slog.Error("dead-letter failed", "event", d.Event.EventID, "error", err)
 	}
 }
 
@@ -75,13 +84,15 @@ func msgsFromEvent(ev AgentEvent) ([]agent.Message, error) {
 	var p struct {
 		Text string `json:"text"`
 	}
+	_ = json.Unmarshal(ev.Payload, &p)
 
-	if err := json.Unmarshal(ev.Payload, &p); err != nil {
-		return nil, fmt.Errorf("payload inválido: %w", err)
+	content := p.Text
+	if content == "" {
+		content = string(ev.Payload)
 	}
-	if p.Text == "" {
-		return nil, fmt.Errorf("payload sem campo 'text'")
+	if content == "" {
+		return nil, fmt.Errorf("empty payload")
 	}
 
-	return []agent.Message{{Role: "user", Content: p.Text}}, nil
+	return []agent.Message{{Role: "user", Content: content}}, nil
 }

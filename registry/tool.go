@@ -3,6 +3,8 @@ package registry
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,21 +18,27 @@ import (
 	"time"
 
 	"github.com/peiblow/avm/agent"
+	"github.com/peiblow/avm/database"
 	"github.com/peiblow/avm/smcp"
 )
 
 const maxDepth = 5
 
+type gate interface {
+	Call(ctx context.Context, gateName string, input json.RawMessage) (*smcp.Result, error)
+}
+
 type contractTool struct {
 	spec     agent.ToolsSpec
 	gateName string
 	steps    []ToolStep
-	bridge   *smcp.Bridge
+	bridge   gate
 	reg      Registry
+	rdb      *database.RedisClient
 	http     *http.Client
 }
 
-func newContractTool(def ToolDef, bridge *smcp.Bridge, reg Registry) *contractTool {
+func newContractTool(def ToolDef, bridge *smcp.Bridge, reg Registry, rdb *database.RedisClient) *contractTool {
 	return &contractTool{
 		spec: agent.ToolsSpec{
 			Name:        sanitizeName(def.Name),
@@ -41,6 +49,7 @@ func newContractTool(def ToolDef, bridge *smcp.Bridge, reg Registry) *contractTo
 		steps:    def.Steps,
 		bridge:   bridge,
 		reg:      reg,
+		rdb:      rdb,
 		http:     &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -143,9 +152,65 @@ func (t *contractTool) executeAction(ctx context.Context, action *ToolAction, in
 		return executeFilesystem(action, input, body)
 	case "shell":
 		return executeShell(ctx, action, input, body)
+	case "dispatch":
+		return t.executeDispatch(ctx, action, input, body)
 	default:
 		return nil, fmt.Errorf("unknown action type: %s", action.Type)
 	}
+}
+
+func (t *contractTool) executeDispatch(ctx context.Context, action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
+	target, err := resolveTemplate(action.Agent, input)
+	if err != nil {
+		return nil, err
+	}
+	if target == "" {
+		return nil, fmt.Errorf("dispatch action has no target agent")
+	}
+
+	payload := dispatchPayload(body)
+
+	correlationID := correlationFrom(ctx)
+	if correlationID == "" {
+		correlationID = randID()
+	}
+
+	ev, err := json.Marshal(map[string]any{
+		"event_id":       randID(),
+		"agent_hash":     target,
+		"context_id":     randID(),
+		"correlation_id": correlationID,
+		"source":         "handoff:" + t.gateName,
+		"payload":        payload,
+		"enqueued_at":    time.Now().UTC().UnixMilli(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	streamID, err := t.rdb.XAdd(ctx, "synx:inbox", ev)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch enqueue: %w", err)
+	}
+
+	return json.Marshal(map[string]string{"dispatched_to": target, "stream_id": streamID})
+}
+
+func randID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func dispatchPayload(body []byte) json.RawMessage {
+	var probe struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(body, &probe) == nil && probe.Text != "" {
+		return json.RawMessage(body)
+	}
+	wrapped, _ := json.Marshal(map[string]string{"text": string(body)})
+	return wrapped
 }
 
 func (t *contractTool) executeHTTP(ctx context.Context, action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
@@ -154,11 +219,26 @@ func (t *contractTool) executeHTTP(ctx context.Context, action *ToolAction, inpu
 		return nil, err
 	}
 
+	if action.Body != "" {
+		resolved, err := resolveTemplate(action.Body, input)
+		if err != nil {
+			return nil, err
+		}
+		body = []byte(resolved)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, action.Method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for k, v := range action.Headers {
+		hv, err := resolveTemplate(v, input)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(k, hv)
+	}
 
 	resp, err := t.http.Do(req)
 	if err != nil {
@@ -288,6 +368,20 @@ func withDepth(ctx context.Context, d int) context.Context {
 	return context.WithValue(ctx, depthKey{}, d)
 }
 
+type correlationKey struct{}
+
+func WithCorrelation(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, correlationKey{}, id)
+}
+
+func correlationFrom(ctx context.Context) string {
+	id, _ := ctx.Value(correlationKey{}).(string)
+	return id
+}
+
 var nameRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
 func sanitizeName(name string) string {
@@ -295,7 +389,7 @@ func sanitizeName(name string) string {
 }
 
 var getEnvRe = regexp.MustCompile(`getEnv\(([^)]+)\)`)
-var fieldRe = regexp.MustCompile(`\{([^}]+)\}`)
+var fieldRe = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
 
 func resolveTemplate(raw string, input json.RawMessage) (string, error) {
 	var missing string

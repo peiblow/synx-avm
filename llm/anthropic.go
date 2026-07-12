@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/peiblow/avm/agent"
 )
@@ -27,7 +26,7 @@ func NewAnthropicModel(baseURL, apiKey, model string, cfg agent.AgentCfg) *Anthr
 		apiKey:  apiKey,
 		model:   model,
 		cfg:     cfg,
-		http:    &http.Client{Timeout: 60 * time.Second},
+		http:    &http.Client{Timeout: clientTimeout()},
 	}
 }
 

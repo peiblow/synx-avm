@@ -11,7 +11,6 @@ import (
 	"github.com/peiblow/avm/database"
 	"github.com/peiblow/avm/ingress"
 	"github.com/peiblow/avm/registry"
-	"github.com/peiblow/avm/smcp"
 )
 
 func main() {
@@ -31,13 +30,15 @@ func main() {
 		panic(err)
 	}
 
-	bridge, err := smcp.NewBridge(ctx, os.Getenv("MCP_URL"), os.Getenv("MCP_LICENSE"))
+	licenses, err := registry.LoadLicenses()
 	if err != nil {
 		panic(err)
 	}
-	defer bridge.Close()
 
-	var reg registry.Registry = registry.NewAgentRegistry(bridge, redisClient)
+	agentReg := registry.NewAgentRegistry(ctx, os.Getenv("MCP_URL"), licenses, redisClient)
+	defer agentReg.Close()
+
+	var reg registry.Registry = agentReg
 
 	memory := agent.NewMemory(redisClient)
 	consumer := ingress.NewConsumer(source, reg)
