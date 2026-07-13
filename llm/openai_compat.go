@@ -12,20 +12,22 @@ import (
 )
 
 type OpenAICompatModel struct {
-	baseURL string
-	apiKey  string
-	model   string
-	cfg     agent.AgentCfg
-	http    *http.Client
+	baseURL   string
+	apiKey    string
+	model     string
+	cfg       agent.AgentCfg
+	http      *http.Client
+	normalize toolCallParser
 }
 
 func NewOpenAICompatModel(baseURL, apiKey, model string, cfg agent.AgentCfg) *OpenAICompatModel {
 	return &OpenAICompatModel{
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		model:   model,
-		cfg:     cfg,
-		http:    &http.Client{Timeout: clientTimeout()},
+		baseURL:   baseURL,
+		apiKey:    apiKey,
+		model:     model,
+		cfg:       cfg,
+		normalize: normalizerFor(model),
+		http:      &http.Client{Timeout: clientTimeout()},
 	}
 }
 
@@ -62,6 +64,11 @@ func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, 
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if m.normalize != nil {
+			if calls := m.normalize(failedGeneration(body)); len(calls) > 0 {
+				return agent.Completion{ToolCalls: calls}, nil
+			}
+		}
 		return agent.Completion{}, fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -74,10 +81,18 @@ func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, 
 	}
 
 	choice := out.Choices[0].Message
-	return agent.Completion{
-		Text:      choice.Content,
-		ToolCalls: fromWireToolCalls(choice.ToolCalls),
-	}, nil
+	calls := fromWireToolCalls(choice.ToolCalls)
+	content := choice.Content
+	if m.normalize != nil {
+		content = stripThinking(content)
+		if len(calls) == 0 {
+			if embedded := m.normalize(content); len(embedded) > 0 {
+				calls = embedded
+				content = ""
+			}
+		}
+	}
+	return agent.Completion{Text: content, ToolCalls: calls}, nil
 }
 
 type chatRequest struct {
@@ -144,6 +159,24 @@ func toWireMessages(msgs []agent.Message) []chatMessage {
 		out[i] = cm
 	}
 	return out
+}
+
+type providerError struct {
+	Error struct {
+		Code             string `json:"code"`
+		FailedGeneration string `json:"failed_generation"`
+	} `json:"error"`
+}
+
+func failedGeneration(body []byte) string {
+	var e providerError
+	if json.Unmarshal(body, &e) != nil {
+		return ""
+	}
+	if e.Error.Code != "tool_use_failed" {
+		return ""
+	}
+	return e.Error.FailedGeneration
 }
 
 func fromWireToolCalls(tcs []chatToolCall) []agent.ToolCall {

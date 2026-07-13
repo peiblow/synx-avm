@@ -60,6 +60,10 @@ func (c *RedisClient) Set(ctx context.Context, key string, value any, ttl time.D
 	return c.Client.Set(ctx, key, value, ttl).Err()
 }
 
+func (c *RedisClient) SetNX(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
+	return c.Client.SetNX(ctx, key, value, ttl).Result()
+}
+
 func (c *RedisClient) Del(ctx context.Context, keys ...string) error {
 	return c.Client.Del(ctx, keys...).Err()
 }

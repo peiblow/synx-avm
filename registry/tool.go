@@ -24,6 +24,8 @@ import (
 
 const maxDepth = 5
 
+const dispatchDedupTTL = time.Hour
+
 type gate interface {
 	Call(ctx context.Context, gateName string, input json.RawMessage) (*smcp.Result, error)
 }
@@ -168,12 +170,19 @@ func (t *contractTool) executeDispatch(ctx context.Context, action *ToolAction, 
 		return nil, fmt.Errorf("dispatch action has no target agent")
 	}
 
-	payload := dispatchPayload(body)
-
 	correlationID := correlationFrom(ctx)
+	if correlationID != "" && t.rdb != nil {
+		key := "synx:seen:dispatch:" + correlationID + ":" + t.gateName + ":" + target
+		first, err := t.rdb.SetNX(ctx, key, 1, dispatchDedupTTL)
+		if err == nil && !first {
+			return json.Marshal(map[string]string{"dispatched_to": target, "deduped": "true"})
+		}
+	}
 	if correlationID == "" {
 		correlationID = randID()
 	}
+
+	payload := dispatchPayload(body)
 
 	ev, err := json.Marshal(map[string]any{
 		"event_id":       randID(),
@@ -408,16 +417,29 @@ func resolveTemplate(raw string, input json.RawMessage) (string, error) {
 	if strings.Contains(out, "{") {
 		var fields map[string]any
 		_ = json.Unmarshal(input, &fields)
+		var missingField string
 		out = fieldRe.ReplaceAllStringFunc(out, func(m string) string {
 			key := strings.TrimSpace(m[1 : len(m)-1])
 			if v, ok := fields[key]; ok {
-				return fmt.Sprint(v)
+				return jsonEscape(fmt.Sprint(v))
 			}
+			missingField = key
 			return m
 		})
+		if missingField != "" {
+			return "", fmt.Errorf("template field %q not provided in input", missingField)
+		}
 	}
 
 	return out, nil
+}
+
+func jsonEscape(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return s
+	}
+	return string(b[1 : len(b)-1])
 }
 
 func buildInputSchema(steps []ToolStep) json.RawMessage {

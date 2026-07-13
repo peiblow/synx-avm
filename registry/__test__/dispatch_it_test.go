@@ -197,6 +197,62 @@ func TestDispatchPropagatesCorrelation(t *testing.T) {
 	}
 
 	rdb.Client.XDel(ctx, "synx:inbox", res.StreamID)
+	rdb.Client.Del(ctx, "synx:seen:dispatch:"+corr+":handoff_to_coder:0xCODER_CORR")
+}
+
+func TestDispatchDedupesRepeatedHandoff(t *testing.T) {
+	if os.Getenv("SYNX_IT") == "" {
+		t.Skip("integration test; set SYNX_IT=1 with redis up")
+	}
+
+	rdb, err := database.NewRedisClient()
+	if err != nil {
+		t.Fatalf("redis: %v", err)
+	}
+	defer rdb.Close()
+
+	corr := "corr-dedup-" + randID()
+	ctx := WithCorrelation(context.Background(), corr)
+	target := "0xCODER_DEDUP"
+	t.Setenv("CODER_HASH", target)
+
+	tool := &contractTool{gateName: "handoff_to_coder", rdb: rdb}
+	action := &ToolAction{Type: "dispatch", Agent: "getEnv(CODER_HASH)"}
+	body := []byte(`{"text":"go"}`)
+
+	before, _ := rdb.Client.XLen(ctx, "synx:inbox").Result()
+
+	out1, err := tool.executeDispatch(ctx, action, json.RawMessage(`{}`), body)
+	if err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	out2, err := tool.executeDispatch(ctx, action, json.RawMessage(`{}`), body)
+	if err != nil {
+		t.Fatalf("second dispatch: %v", err)
+	}
+
+	after, _ := rdb.Client.XLen(ctx, "synx:inbox").Result()
+	if after-before != 1 {
+		t.Fatalf("repeated handoff must enqueue once, inbox grew by %d", after-before)
+	}
+
+	var r1 struct {
+		StreamID string `json:"stream_id"`
+	}
+	json.Unmarshal(out1, &r1)
+	var r2 struct {
+		Deduped string `json:"deduped"`
+	}
+	json.Unmarshal(out2, &r2)
+	if r1.StreamID == "" {
+		t.Errorf("first dispatch should return a stream_id, got %s", string(out1))
+	}
+	if r2.Deduped != "true" {
+		t.Errorf("second dispatch should be deduped, got %s", string(out2))
+	}
+
+	rdb.Client.XDel(ctx, "synx:inbox", r1.StreamID)
+	rdb.Client.Del(ctx, "synx:seen:dispatch:"+corr+":handoff_to_coder:"+target)
 }
 
 func TestDispatchDeniedByGateSkipsEnqueue(t *testing.T) {

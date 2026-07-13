@@ -10,7 +10,19 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 		msgs = append([]Message{{Role: "system", Content: a.SystemPrompt}}, msgs...)
 	}
 
-	for {
+	maxSteps := a.Cfg.MaxSteps
+	if maxSteps <= 0 {
+		maxSteps = 10
+	}
+
+	for step := 0; step < maxSteps; step++ {
+		if step == maxSteps-1 {
+			msgs = append(msgs, Message{
+				Role:    "system",
+				Content: "You have reached your step budget. Do not call any tool other than reply. Call reply now with your best answer from what you have already read.",
+			})
+		}
+
 		out, err := a.Model.Complete(ctx, msgs, specs(a.Tools))
 		if err != nil {
 			return nil, err
@@ -48,4 +60,6 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 		wg.Wait()
 		msgs = append(msgs, results...)
 	}
+
+	return msgs, nil
 }
