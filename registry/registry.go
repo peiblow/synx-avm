@@ -182,6 +182,7 @@ func buildAgent(def Definition, bridge *smcp.Bridge, reg Registry, rdb *database
 		MaxSteps:    def.Behavior.MaxSteps,
 		MaxTokens:   def.Model.MaxTokens,
 		Temperature: def.Model.Temperature,
+		OnFinish:    def.Behavior.OnFinish,
 	}
 
 	model, err := llm.NewModel(def.Model.Provider, def.Model.Name, cfg)

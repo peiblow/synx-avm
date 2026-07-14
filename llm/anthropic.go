@@ -30,7 +30,7 @@ func NewAnthropicModel(baseURL, apiKey, model string, cfg agent.AgentCfg) *Anthr
 	}
 }
 
-func (m *AnthropicModel) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolsSpec) (agent.Completion, error) {
+func (m *AnthropicModel) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolsSpec, choice agent.ToolChoice) (agent.Completion, error) {
 	system, messages := toAnthropicMessages(msgs)
 
 	maxTokens := m.cfg.MaxTokens
@@ -56,6 +56,9 @@ func (m *AnthropicModel) Complete(ctx context.Context, msgs []agent.Message, too
 	if at := toAnthropicTools(tools); len(at) > 0 {
 		at[len(at)-1]["cache_control"] = map[string]string{"type": "ephemeral"}
 		body["tools"] = at
+		if choice == agent.ChoiceRequired {
+			body["tool_choice"] = map[string]string{"type": "any"}
+		}
 	}
 
 	raw, err := json.Marshal(body)

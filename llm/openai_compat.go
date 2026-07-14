@@ -31,13 +31,16 @@ func NewOpenAICompatModel(baseURL, apiKey, model string, cfg agent.AgentCfg) *Op
 	}
 }
 
-func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolsSpec) (agent.Completion, error) {
+func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolsSpec, choice agent.ToolChoice) (agent.Completion, error) {
 	reqBody := chatRequest{
 		Model:       m.model,
 		Messages:    toWireMessages(msgs),
 		Temperature: m.cfg.Temperature,
 		MaxTokens:   m.cfg.MaxTokens,
 		Tools:       toWireTools(tools),
+	}
+	if choice == agent.ChoiceRequired && len(tools) > 0 {
+		reqBody.ToolChoice = "required"
 	}
 
 	raw, err := json.Marshal(reqBody)
@@ -80,9 +83,9 @@ func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, 
 		return agent.Completion{}, fmt.Errorf("provider returned no choices")
 	}
 
-	choice := out.Choices[0].Message
-	calls := fromWireToolCalls(choice.ToolCalls)
-	content := choice.Content
+	msg := out.Choices[0].Message
+	calls := fromWireToolCalls(msg.ToolCalls)
+	content := msg.Content
 	if m.normalize != nil {
 		content = stripThinking(content)
 		if len(calls) == 0 {
@@ -101,6 +104,7 @@ type chatRequest struct {
 	Temperature float64       `json:"temperature"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	Tools       []chatTool    `json:"tools,omitempty"`
+	ToolChoice  any           `json:"tool_choice,omitempty"`
 }
 
 type chatMessage struct {

@@ -23,6 +23,7 @@ type BehaviorSpec struct {
 	MaxSteps int    `json:"max_steps"`
 	OnDeny   string `json:"on_deny"`
 	OnError  string `json:"on_error"`
+	OnFinish string `json:"on_finish"`
 }
 
 type ToolDef struct {

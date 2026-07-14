@@ -35,7 +35,15 @@ type AgentCfg struct {
 	MaxSteps    int
 	MaxTokens   int
 	Temperature float64
+	OnFinish    string
 }
+
+type ToolChoice int
+
+const (
+	ChoiceAuto ToolChoice = iota
+	ChoiceRequired
+)
 
 type AgentInfo struct {
 	Model        Model
@@ -56,7 +64,7 @@ func NewAgent(model Model, tools map[string]Tool, cfg AgentCfg, version, systemP
 }
 
 type Model interface {
-	Complete(ctx context.Context, msgs []Message, tools []ToolsSpec) (Completion, error)
+	Complete(ctx context.Context, msgs []Message, tools []ToolsSpec, choice ToolChoice) (Completion, error)
 }
 
 type Tool interface {
