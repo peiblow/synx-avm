@@ -68,7 +68,7 @@ func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, 
 
 	if resp.StatusCode != http.StatusOK {
 		if m.normalize != nil {
-			if calls := m.normalize(failedGeneration(body)); len(calls) > 0 {
+			if calls := m.normalize(failedGeneration(body), tools); len(calls) > 0 {
 				return agent.Completion{ToolCalls: calls}, nil
 			}
 		}
@@ -89,7 +89,7 @@ func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, 
 	if m.normalize != nil {
 		content = stripThinking(content)
 		if len(calls) == 0 {
-			if embedded := m.normalize(content); len(embedded) > 0 {
+			if embedded := m.normalize(content, tools); len(embedded) > 0 {
 				calls = embedded
 				content = ""
 			}

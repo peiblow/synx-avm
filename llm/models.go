@@ -30,7 +30,7 @@ var Providers = map[string]Provider{
 	"openai":     {Family: "openai-compat", BaseURL: "https://api.openai.com/v1", EnvKey: "OPENAI_API_KEY"},
 	"openrouter": {Family: "openai-compat", BaseURL: "https://openrouter.ai/api/v1", EnvKey: "OPENROUTER_API_KEY"},
 	"anthropic":  {Family: "anthropic", BaseURL: "https://api.anthropic.com", EnvKey: "ANTHROPIC_API_KEY"},
-	"ollama":     {Family: "openai-compat", BaseURL: "http://localhost:11434/v1", EnvKey: ""},
+	"ollama":     {Family: "openai-compat", BaseURL: "http://127.0.0.1:11434/v1", EnvKey: ""},
 }
 
 func NewModel(provider, name string, cfg agent.AgentCfg) (agent.Model, error) {

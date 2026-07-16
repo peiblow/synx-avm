@@ -16,9 +16,10 @@ type AgentEvent struct {
 }
 
 type Delivery struct {
-	Event AgentEvent
-	Ack   func() error
-	Dead  func(reason string) error
+	Event      AgentEvent
+	Deliveries int64
+	Ack        func() error
+	Dead       func(reason string) error
 }
 
 type EventSource interface {

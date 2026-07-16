@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,7 +20,6 @@ import (
 
 	"github.com/peiblow/avm/agent"
 	"github.com/peiblow/avm/database"
-	"github.com/peiblow/avm/smcp"
 )
 
 const maxDepth = 5
@@ -27,7 +27,7 @@ const maxDepth = 5
 const dispatchDedupTTL = time.Hour
 
 type gate interface {
-	Call(ctx context.Context, gateName string, input json.RawMessage) (*smcp.Result, error)
+	Call(ctx context.Context, gateName string, input json.RawMessage) (*Result, error)
 }
 
 type contractTool struct {
@@ -40,7 +40,7 @@ type contractTool struct {
 	http     *http.Client
 }
 
-func newContractTool(def ToolDef, bridge *smcp.Bridge, reg Registry, rdb *database.RedisClient) *contractTool {
+func newContractTool(def ToolDef, bridge gate, reg Registry, rdb *database.RedisClient) *contractTool {
 	return &contractTool{
 		spec: agent.ToolsSpec{
 			Name:        sanitizeName(def.Name),
@@ -59,10 +59,14 @@ func newContractTool(def ToolDef, bridge *smcp.Bridge, reg Registry, rdb *databa
 func (t *contractTool) Spec() agent.ToolsSpec { return t.spec }
 
 func (t *contractTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	gateStart := time.Now()
 	res, err := t.bridge.Call(ctx, t.gateName, input)
+	gateMs := time.Since(gateStart).Milliseconds()
 	if err != nil {
+		slog.Error("gate call", "tool", t.gateName, "ms", gateMs, "error", err.Error())
 		return nil, err
 	}
+	slog.Info("gate call", "tool", t.gateName, "ms", gateMs, "decision", res.Decision)
 
 	if res.Decision != "APPROVED" {
 		return res.Raw, nil
@@ -122,7 +126,7 @@ func (t *contractTool) delegate(ctx context.Context, target string, input json.R
 	return out, nil
 }
 
-func bodyForStep(res *smcp.Result, fn string, input json.RawMessage) []byte {
+func bodyForStep(res *Result, fn string, input json.RawMessage) []byte {
 	for _, s := range res.Steps {
 		if s.Function == fn && len(s.Events) > 0 {
 			return eventBody(s.Events)
@@ -131,7 +135,7 @@ func bodyForStep(res *smcp.Result, fn string, input json.RawMessage) []byte {
 	return input
 }
 
-func eventBody(events []smcp.StepEvent) []byte {
+func eventBody(events []StepEvent) []byte {
 	data := events[len(events)-1].Data
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) == nil && len(obj) == 1 {
@@ -147,6 +151,18 @@ func eventBody(events []smcp.StepEvent) []byte {
 }
 
 func (t *contractTool) executeAction(ctx context.Context, action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
+	start := time.Now()
+	out, err := t.dispatchAction(ctx, action, input, body)
+	ms := time.Since(start).Milliseconds()
+	if err != nil {
+		slog.Error("action failed", "tool", t.gateName, "type", action.Type, "ms", ms, "error", err.Error())
+	} else {
+		slog.Info("action done", "tool", t.gateName, "type", action.Type, "ms", ms)
+	}
+	return out, err
+}
+
+func (t *contractTool) dispatchAction(ctx context.Context, action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
 	switch action.Type {
 	case "http", "":
 		return t.executeHTTP(ctx, action, input, body)
@@ -159,6 +175,17 @@ func (t *contractTool) executeAction(ctx context.Context, action *ToolAction, in
 	default:
 		return nil, fmt.Errorf("unknown action type: %s", action.Type)
 	}
+}
+
+var secretRe = regexp.MustCompile(`(?i)(bot\d{5,}:[A-Za-z0-9_-]{20,}|bearer\s+[A-Za-z0-9._-]+|(?:api[_-]?key|token|secret|password)["':=\s]+[A-Za-z0-9._-]+)`)
+
+func redact(s string) string { return secretRe.ReplaceAllString(s, "***") }
+
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
 
 func (t *contractTool) executeDispatch(ctx context.Context, action *ToolAction, input json.RawMessage, body []byte) (json.RawMessage, error) {
@@ -202,6 +229,7 @@ func (t *contractTool) executeDispatch(ctx context.Context, action *ToolAction, 
 		return nil, fmt.Errorf("dispatch enqueue: %w", err)
 	}
 
+	slog.Info("dispatch", "tool", t.gateName, "target", target, "correlation", correlationID, "stream", streamID)
 	return json.Marshal(map[string]string{"dispatched_to": target, "stream_id": streamID})
 }
 
@@ -236,6 +264,8 @@ func (t *contractTool) executeHTTP(ctx context.Context, action *ToolAction, inpu
 		body = []byte(resolved)
 	}
 
+	slog.Info("http request", "tool", t.gateName, "method", action.Method, "url", redact(url), "body", redact(truncate(string(body), 1000)))
+
 	req, err := http.NewRequestWithContext(ctx, action.Method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -251,6 +281,7 @@ func (t *contractTool) executeHTTP(ctx context.Context, action *ToolAction, inpu
 
 	resp, err := t.http.Do(req)
 	if err != nil {
+		slog.Error("http transport error", "tool", t.gateName, "url", redact(url), "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -259,6 +290,7 @@ func (t *contractTool) executeHTTP(ctx context.Context, action *ToolAction, inpu
 	if err != nil {
 		return nil, err
 	}
+	slog.Info("http response", "tool", t.gateName, "status", resp.StatusCode, "body", redact(truncate(string(respBody), 1000)))
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 	}
@@ -292,6 +324,7 @@ func executeFilesystem(action *ToolAction, input json.RawMessage, body []byte) (
 		if err := os.WriteFile(path, body, 0o644); err != nil {
 			return nil, err
 		}
+		slog.Info("fs write", "path", path, "bytes", len(body))
 		return json.Marshal(map[string]any{"path": path, "bytes": len(body)})
 	default:
 		return nil, fmt.Errorf("unknown filesystem operation: %s", action.Operation)
@@ -345,6 +378,7 @@ func executeShell(ctx context.Context, action *ToolAction, input json.RawMessage
 		args[i] = v
 	}
 
+	slog.Info("shell", "command", command, "args", args)
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Stdin = bytes.NewReader(body)
 

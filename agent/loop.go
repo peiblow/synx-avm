@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"sync"
+	"time"
 )
 
 func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) {
@@ -17,7 +19,9 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 	terminal := a.finishTool()
 
 	for step := 0; step < maxSteps; step++ {
+		llmStart := time.Now()
 		out, err := a.Model.Complete(ctx, msgs, specs(a.Tools), ChoiceAuto)
+		slog.Info("llm call", "step", step, "ms", time.Since(llmStart).Milliseconds())
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +79,10 @@ func (a *AgentInfo) forceFinish(ctx context.Context, msgs []Message, terminal st
 		Content: "You must finish now by calling the " + terminal + " tool with your final answer.",
 	})
 	only := map[string]Tool{terminal: a.Tools[terminal]}
-	return a.Model.Complete(ctx, nudged, specs(only), ChoiceRequired)
+	llmStart := time.Now()
+	out, err := a.Model.Complete(ctx, nudged, specs(only), ChoiceRequired)
+	slog.Info("llm call", "step", "finish", "ms", time.Since(llmStart).Milliseconds())
+	return out, err
 }
 
 func (a *AgentInfo) runCalls(ctx context.Context, calls []ToolCall) []Message {
