@@ -10,24 +10,24 @@ import (
 
 const (
 	maxMessages = 20
-	memoryTTL   = 48 * time.Hour
+	windowTTL   = 48 * time.Hour
 	keyPrefix   = "synx:memory:"
 )
 
-type Memory struct {
+type ContextWindow struct {
 	rdb *database.RedisClient
 }
 
-func NewMemory(rdb *database.RedisClient) *Memory {
-	return &Memory{rdb: rdb}
+func NewContextWindow(rdb *database.RedisClient) *ContextWindow {
+	return &ContextWindow{rdb: rdb}
 }
 
-func memKey(contextID string) string {
+func windowKey(contextID string) string {
 	return keyPrefix + contextID
 }
 
-func (m *Memory) Load(ctx context.Context, contextID string) ([]Message, error) {
-	raw, err := m.rdb.Range(ctx, memKey(contextID), 0, -1)
+func (w *ContextWindow) Load(ctx context.Context, contextID string) ([]Message, error) {
+	raw, err := w.rdb.Range(ctx, windowKey(contextID), 0, -1)
 	if err != nil {
 		return nil, err
 	}
@@ -43,12 +43,12 @@ func (m *Memory) Load(ctx context.Context, contextID string) ([]Message, error) 
 	return msgs, nil
 }
 
-func (m *Memory) Append(ctx context.Context, contextID string, msgs ...Message) error {
+func (w *ContextWindow) Append(ctx context.Context, contextID string, msgs ...Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
 
-	key := memKey(contextID)
+	key := windowKey(contextID)
 	values := make([]any, 0, len(msgs))
 	for _, msg := range msgs {
 		b, err := json.Marshal(msg)
@@ -58,11 +58,11 @@ func (m *Memory) Append(ctx context.Context, contextID string, msgs ...Message) 
 		values = append(values, b)
 	}
 
-	if err := m.rdb.RPush(ctx, key, values...); err != nil {
+	if err := w.rdb.RPush(ctx, key, values...); err != nil {
 		return err
 	}
-	if err := m.rdb.Trim(ctx, key, -maxMessages, -1); err != nil {
+	if err := w.rdb.Trim(ctx, key, -maxMessages, -1); err != nil {
 		return err
 	}
-	return m.rdb.Expire(ctx, key, memoryTTL)
+	return w.rdb.Expire(ctx, key, windowTTL)
 }

@@ -36,9 +36,9 @@ func main() {
 
 	var reg registry.Registry = agentReg
 
-	memory := agent.NewMemory(redisClient)
+	window := agent.NewContextWindow(redisClient)
 	consumer := ingress.NewConsumer(source, reg)
-	if err := consumer.Start(ctx, *memory, ingress.LoadConfig()); err != nil {
+	if err := consumer.Start(ctx, *window, ingress.LoadConfig()); err != nil {
 		panic(err)
 	}
 }

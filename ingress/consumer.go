@@ -30,14 +30,14 @@ func NewConsumer(source EventSource, registry registry.Registry) *Consumer {
 	}
 }
 
-func (c *Consumer) Start(ctx context.Context, mem agent.Memory, cfg Config) error {
+func (c *Consumer) Start(ctx context.Context, cw agent.ContextWindow, cfg Config) error {
 	slog.Info("consumer started", "max_concurrent", cfg.MaxConcurrent)
 
 	sem := make(chan struct{}, cfg.MaxConcurrent)
 	var wg sync.WaitGroup
 
 	if rc, ok := c.Source.(reclaimer); ok {
-		go c.reclaimLoop(ctx, mem, cfg, rc, sem, &wg)
+		go c.reclaimLoop(ctx, cw, cfg, rc, sem, &wg)
 	}
 
 	for {
@@ -50,11 +50,11 @@ func (c *Consumer) Start(ctx context.Context, mem agent.Memory, cfg Config) erro
 			slog.Error("consuming event", "error", err)
 			continue
 		}
-		c.dispatch(ctx, mem, d, sem, &wg)
+		c.dispatch(ctx, cw, d, sem, &wg)
 	}
 }
 
-func (c *Consumer) reclaimLoop(ctx context.Context, mem agent.Memory, cfg Config, rc reclaimer, sem chan struct{}, wg *sync.WaitGroup) {
+func (c *Consumer) reclaimLoop(ctx context.Context, cw agent.ContextWindow, cfg Config, rc reclaimer, sem chan struct{}, wg *sync.WaitGroup) {
 	t := time.NewTicker(cfg.ReclaimInterval)
 	defer t.Stop()
 
@@ -70,7 +70,7 @@ func (c *Consumer) reclaimLoop(ctx context.Context, mem agent.Memory, cfg Config
 			}
 			for _, d := range ds {
 				slog.Info("reclaimed pending event", "event", d.Event.EventID, "deliveries", d.Deliveries)
-				c.dispatch(ctx, mem, d, sem, wg)
+				c.dispatch(ctx, cw, d, sem, wg)
 			}
 		}
 	}
@@ -79,7 +79,7 @@ func (c *Consumer) reclaimLoop(ctx context.Context, mem agent.Memory, cfg Config
 // dispatch resolves the agent and runs it under the concurrency semaphore. A
 // failed resolve leaves the entry pending (no ack) so the reclaimer retries it,
 // bounded by maxDeliveries — it never silently drops.
-func (c *Consumer) dispatch(ctx context.Context, mem agent.Memory, d Delivery, sem chan struct{}, wg *sync.WaitGroup) {
+func (c *Consumer) dispatch(ctx context.Context, cw agent.ContextWindow, d Delivery, sem chan struct{}, wg *sync.WaitGroup) {
 	agt, err := c.registry.GetAgent(ctx, d.Event.AgentHash)
 	if err != nil {
 		slog.Error("resolving agent", "agent", d.Event.AgentHash, "event", d.Event.EventID, "deliveries", d.Deliveries, "error", err)
@@ -91,11 +91,11 @@ func (c *Consumer) dispatch(ctx context.Context, mem agent.Memory, d Delivery, s
 	go func() {
 		defer wg.Done()
 		defer func() { <-sem }()
-		c.handle(ctx, mem, d, agt)
+		c.handle(ctx, cw, d, agt)
 	}()
 }
 
-func (c *Consumer) handle(ctx context.Context, mem agent.Memory, d Delivery, agt *agent.AgentInfo) {
+func (c *Consumer) handle(ctx context.Context, cw agent.ContextWindow, d Delivery, agt *agent.AgentInfo) {
 	userMsgs, err := msgsFromEvent(d.Event)
 	if err != nil {
 		slog.Error("building messages", "event", d.Event.EventID, "error", err)
@@ -103,7 +103,7 @@ func (c *Consumer) handle(ctx context.Context, mem agent.Memory, d Delivery, agt
 		return
 	}
 
-	prior, _ := mem.Load(ctx, d.Event.ContextID)
+	prior, _ := cw.Load(ctx, d.Event.ContextID)
 	msgs := append(prior, userMsgs...)
 
 	runCtx := registry.WithCorrelation(ctx, d.Event.CorrelationID)
@@ -113,8 +113,8 @@ func (c *Consumer) handle(ctx context.Context, mem agent.Memory, d Delivery, agt
 		return
 	}
 
-	mem.Append(ctx, d.Event.ContextID, userMsgs...)
-	mem.Append(ctx, d.Event.ContextID, resp...)
+	cw.Append(ctx, d.Event.ContextID, userMsgs...)
+	cw.Append(ctx, d.Event.ContextID, resp...)
 
 	if err := d.Ack(); err != nil {
 		slog.Error("ack failed", "event", d.Event.EventID, "error", err)
