@@ -24,8 +24,6 @@ func normalizerFor(model string) toolCallParser {
 	}
 }
 
-// singleParam returns the parameter name of a tool that takes exactly one
-// argument, so a bare value in a malformed call can be mapped to it.
 func singleParam(tools []agent.ToolsSpec, name string) string {
 	for _, t := range tools {
 		if t.Name != name {
@@ -113,8 +111,6 @@ func llamaArgs(seg string, tools []agent.ToolsSpec, name string) json.RawMessage
 	return wrapped
 }
 
-// firstJSONObject returns the first balanced, valid JSON object in s (respecting
-// string literals), or "" if there is none.
 func firstJSONObject(s string) string {
 	start := strings.IndexByte(s, '{')
 	if start < 0 {

@@ -107,14 +107,24 @@ func (c *Consumer) handle(ctx context.Context, cw agent.ContextWindow, d Deliver
 	msgs := append(prior, userMsgs...)
 
 	runCtx := registry.WithCorrelation(ctx, d.Event.CorrelationID)
+	runCtx = registry.WithContextID(runCtx, d.Event.ContextID)
 	resp, err := agt.Run(runCtx, msgs)
 	if err != nil {
 		slog.Error("agent run failed", "agent", d.Event.AgentHash, "event", d.Event.EventID, "deliveries", d.Deliveries, "error", err)
 		return
 	}
 
-	cw.Append(ctx, d.Event.ContextID, userMsgs...)
-	cw.Append(ctx, d.Event.ContextID, resp...)
+	persisted := resp[:0:0]
+	for _, m := range resp {
+		if m.Role != "system" {
+			persisted = append(persisted, m)
+		}
+	}
+
+	if err := cw.Replace(ctx, d.Event.ContextID, persisted); err != nil {
+		slog.Error("context window replace failed", "event", d.Event.EventID, "error", err)
+		return
+	}
 
 	if err := d.Ack(); err != nil {
 		slog.Error("ack failed", "event", d.Event.EventID, "error", err)

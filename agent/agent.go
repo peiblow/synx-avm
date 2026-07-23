@@ -3,7 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
+
+var ErrDenied = errors.New("gate denied")
 
 type ToolCall struct {
 	ID    string
@@ -36,6 +39,7 @@ type AgentCfg struct {
 	MaxTokens   int
 	Temperature float64
 	OnFinish    string
+	OnDeny      string
 }
 
 type ToolChoice int

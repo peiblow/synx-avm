@@ -51,6 +51,7 @@ func (c *gateClient) call(ctx context.Context, agentHash, toolName string, input
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Context-ID", contextFrom(ctx))
 
 	resp, err := c.http.Do(req)
 	if err != nil {

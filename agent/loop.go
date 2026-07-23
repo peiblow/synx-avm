@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -31,10 +32,12 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 			if terminal == "" {
 				return msgs, nil
 			}
+
 			forced, err := a.forceFinish(ctx, msgs, terminal)
 			if err != nil {
 				return nil, err
 			}
+
 			msgs = append(msgs, assistantMessage(forced))
 			if len(forced.ToolCalls) == 0 {
 				return msgs, nil
@@ -42,10 +45,16 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 			out = forced
 		}
 
-		msgs = append(msgs, a.runCalls(ctx, out.ToolCalls)...)
+		toolMsgs, denied := a.runCalls(ctx, out.ToolCalls)
+		msgs = append(msgs, toolMsgs...)
 
 		if terminal != "" && calledTool(out.ToolCalls, terminal) {
 			return msgs, nil
+		}
+
+		if denied && a.denyHalts() {
+			slog.Info("halting on gate denial", "step", step)
+			break
 		}
 	}
 
@@ -56,7 +65,8 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 		}
 		msgs = append(msgs, assistantMessage(forced))
 		if len(forced.ToolCalls) > 0 {
-			msgs = append(msgs, a.runCalls(ctx, forced.ToolCalls)...)
+			toolMsgs, _ := a.runCalls(ctx, forced.ToolCalls)
+			msgs = append(msgs, toolMsgs...)
 		}
 	}
 	return msgs, nil
@@ -85,8 +95,9 @@ func (a *AgentInfo) forceFinish(ctx context.Context, msgs []Message, terminal st
 	return out, err
 }
 
-func (a *AgentInfo) runCalls(ctx context.Context, calls []ToolCall) []Message {
+func (a *AgentInfo) runCalls(ctx context.Context, calls []ToolCall) ([]Message, bool) {
 	results := make([]Message, len(calls))
+	denied := make([]bool, len(calls))
 	var wg sync.WaitGroup
 
 	for i, call := range calls {
@@ -100,16 +111,38 @@ func (a *AgentInfo) runCalls(ctx context.Context, calls []ToolCall) []Message {
 		go func(i int, call ToolCall) {
 			defer wg.Done()
 			res, err := tool.Run(ctx, call.Input)
-			if err != nil {
+			switch {
+			case errors.Is(err, ErrDenied):
+				results[i] = toolResult(call, res)
+				denied[i] = true
+			case err != nil:
 				results[i] = toolError(call, err.Error())
-				return
+			default:
+				results[i] = toolResult(call, res)
 			}
-			results[i] = toolResult(call, res)
 		}(i, call)
 	}
 
 	wg.Wait()
-	return results
+
+	for _, d := range denied {
+		if d {
+			return results, true
+		}
+	}
+	return results, false
+}
+
+func (a *AgentInfo) denyHalts() bool {
+	switch a.Cfg.OnDeny {
+	case "halt":
+		return true
+	case "", "reflect":
+		return false
+	default:
+		slog.Warn("unknown onDeny value, treating as reflect", "value", a.Cfg.OnDeny)
+		return false
+	}
 }
 
 func calledTool(calls []ToolCall, name string) bool {

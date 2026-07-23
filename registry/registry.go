@@ -102,6 +102,7 @@ func buildAgent(def Definition, g gate, reg Registry, rdb *database.RedisClient)
 		MaxTokens:   def.Model.MaxTokens,
 		Temperature: def.Model.Temperature,
 		OnFinish:    def.Behavior.OnFinish,
+		OnDeny:      def.Behavior.OnDeny,
 	}
 
 	model, err := llm.NewModel(def.Model.Provider, def.Model.Name, cfg)

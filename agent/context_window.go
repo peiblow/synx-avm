@@ -66,3 +66,29 @@ func (w *ContextWindow) Append(ctx context.Context, contextID string, msgs ...Me
 	}
 	return w.rdb.Expire(ctx, key, windowTTL)
 }
+
+func (w *ContextWindow) Replace(ctx context.Context, contextID string, msgs []Message) error {
+	key := windowKey(contextID)
+	if err := w.rdb.Del(ctx, key); err != nil {
+		return err
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	values := make([]any, 0, len(msgs))
+	for _, msg := range msgs {
+		b, err := json.Marshal(msg)
+		if err != nil {
+			return err
+		}
+		values = append(values, b)
+	}
+	if err := w.rdb.RPush(ctx, key, values...); err != nil {
+		return err
+	}
+
+	if err := w.rdb.Trim(ctx, key, -maxMessages, -1); err != nil {
+		return err
+	}
+	return w.rdb.Expire(ctx, key, windowTTL)
+}

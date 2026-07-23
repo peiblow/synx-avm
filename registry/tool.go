@@ -69,7 +69,7 @@ func (t *contractTool) Run(ctx context.Context, input json.RawMessage) (json.Raw
 	slog.Info("gate call", "tool", t.gateName, "ms", gateMs, "decision", res.Decision)
 
 	if res.Decision != "APPROVED" {
-		return res.Raw, nil
+		return res.Raw, agent.ErrDenied
 	}
 
 	outputs := make([]json.RawMessage, 0, len(t.steps))
@@ -422,6 +422,20 @@ func WithCorrelation(ctx context.Context, id string) context.Context {
 
 func correlationFrom(ctx context.Context) string {
 	id, _ := ctx.Value(correlationKey{}).(string)
+	return id
+}
+
+type gateContextKey struct{}
+
+func WithContextID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, gateContextKey{}, id)
+}
+
+func contextFrom(ctx context.Context) string {
+	id, _ := ctx.Value(gateContextKey{}).(string)
 	return id
 }
 
