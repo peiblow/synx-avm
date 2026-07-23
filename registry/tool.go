@@ -110,7 +110,7 @@ func (t *contractTool) delegate(ctx context.Context, target string, input json.R
 
 	msgs, err := agt.Run(withDepth(ctx, depth+1), []agent.Message{
 		{Role: "user", Content: string(input)},
-	})
+	}, nil)
 	if err != nil {
 		return nil, err
 	}

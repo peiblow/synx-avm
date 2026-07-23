@@ -76,7 +76,7 @@ func (m *AnthropicModel) Complete(ctx context.Context, msgs []agent.Message, too
 
 	resp, err := m.http.Do(req)
 	if err != nil {
-		return agent.Completion{}, fmt.Errorf("call provider: %w", err)
+		return agent.Completion{}, agent.Transient(fmt.Errorf("call provider: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -85,7 +85,11 @@ func (m *AnthropicModel) Complete(ctx context.Context, msgs []agent.Message, too
 		return agent.Completion{}, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return agent.Completion{}, fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(respBody))
+		err := fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(respBody))
+		if isTransientStatus(resp.StatusCode) {
+			return agent.Completion{}, agent.Transient(err)
+		}
+		return agent.Completion{}, err
 	}
 
 	var out struct {

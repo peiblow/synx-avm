@@ -8,7 +8,13 @@ import (
 	"time"
 )
 
-func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) {
+const (
+	maxBackoffRetries = 4
+	backoffBase       = 1 * time.Second
+	backoffMax        = 10 * time.Second
+)
+
+func (a *AgentInfo) Run(ctx context.Context, msgs []Message, cp Checkpoint) ([]Message, error) {
 	if a.SystemPrompt != "" && (len(msgs) == 0 || msgs[0].Role != "system") {
 		msgs = append([]Message{{Role: "system", Content: a.SystemPrompt}}, msgs...)
 	}
@@ -20,9 +26,7 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 	terminal := a.finishTool()
 
 	for step := 0; step < maxSteps; step++ {
-		llmStart := time.Now()
-		out, err := a.Model.Complete(ctx, msgs, specs(a.Tools), ChoiceAuto)
-		slog.Info("llm call", "step", step, "ms", time.Since(llmStart).Milliseconds())
+		out, err := a.complete(ctx, msgs, specs(a.Tools), ChoiceAuto)
 		if err != nil {
 			return nil, err
 		}
@@ -47,6 +51,7 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 
 		toolMsgs, denied := a.runCalls(ctx, out.ToolCalls)
 		msgs = append(msgs, toolMsgs...)
+		a.checkpoint(ctx, cp, msgs)
 
 		if terminal != "" && calledTool(out.ToolCalls, terminal) {
 			return msgs, nil
@@ -67,9 +72,59 @@ func (a *AgentInfo) Run(ctx context.Context, msgs []Message) ([]Message, error) 
 		if len(forced.ToolCalls) > 0 {
 			toolMsgs, _ := a.runCalls(ctx, forced.ToolCalls)
 			msgs = append(msgs, toolMsgs...)
+			a.checkpoint(ctx, cp, msgs)
 		}
 	}
 	return msgs, nil
+}
+
+func (a *AgentInfo) complete(ctx context.Context, msgs []Message, tools []ToolsSpec, choice ToolChoice) (Completion, error) {
+	var last error
+	delay := backoffBase
+	for attempt := 0; attempt <= maxBackoffRetries; attempt++ {
+		if attempt > 0 {
+			slog.Warn("llm transient error, backing off", "attempt", attempt, "delay", delay.String(), "error", last)
+			select {
+			case <-ctx.Done():
+				return Completion{}, ctx.Err()
+			case <-time.After(delay):
+			}
+			delay *= 2
+			if delay > backoffMax {
+				delay = backoffMax
+			}
+		}
+		start := time.Now()
+		out, err := a.Model.Complete(ctx, msgs, tools, choice)
+		slog.Info("llm call", "attempt", attempt, "ms", time.Since(start).Milliseconds())
+		if err == nil {
+			return out, nil
+		}
+		if !IsTransient(err) {
+			return Completion{}, err
+		}
+		last = err
+	}
+	return Completion{}, last
+}
+
+func (a *AgentInfo) checkpoint(ctx context.Context, cp Checkpoint, msgs []Message) {
+	if cp == nil {
+		return
+	}
+	if err := cp.Save(ctx, stripSystem(msgs)); err != nil {
+		slog.Warn("checkpoint save failed", "error", err)
+	}
+}
+
+func stripSystem(msgs []Message) []Message {
+	out := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role != "system" {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func (a *AgentInfo) finishTool() string {
@@ -89,10 +144,7 @@ func (a *AgentInfo) forceFinish(ctx context.Context, msgs []Message, terminal st
 		Content: "You must finish now by calling the " + terminal + " tool with your final answer.",
 	})
 	only := map[string]Tool{terminal: a.Tools[terminal]}
-	llmStart := time.Now()
-	out, err := a.Model.Complete(ctx, nudged, specs(only), ChoiceRequired)
-	slog.Info("llm call", "step", "finish", "ms", time.Since(llmStart).Milliseconds())
-	return out, err
+	return a.complete(ctx, nudged, specs(only), ChoiceRequired)
 }
 
 func (a *AgentInfo) runCalls(ctx context.Context, calls []ToolCall) ([]Message, bool) {

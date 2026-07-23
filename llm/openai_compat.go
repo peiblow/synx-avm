@@ -57,7 +57,7 @@ func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, 
 
 	resp, err := m.http.Do(req)
 	if err != nil {
-		return agent.Completion{}, fmt.Errorf("call provider: %w", err)
+		return agent.Completion{}, agent.Transient(fmt.Errorf("call provider: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -72,7 +72,11 @@ func (m *OpenAICompatModel) Complete(ctx context.Context, msgs []agent.Message, 
 				return agent.Completion{ToolCalls: calls}, nil
 			}
 		}
-		return agent.Completion{}, fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(body))
+		err := fmt.Errorf("provider returned %d: %s", resp.StatusCode, string(body))
+		if isTransientStatus(resp.StatusCode) {
+			return agent.Completion{}, agent.Transient(err)
+		}
+		return agent.Completion{}, err
 	}
 
 	var out chatResponse

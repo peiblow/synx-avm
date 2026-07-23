@@ -103,14 +103,33 @@ func (c *Consumer) handle(ctx context.Context, cw agent.ContextWindow, d Deliver
 		return
 	}
 
-	prior, _ := cw.Load(ctx, d.Event.ContextID)
-	msgs := append(prior, userMsgs...)
+	msgs, err := cw.LoadTurn(ctx, d.Event.EventID)
+	if err != nil {
+		slog.Error("loading turn checkpoint", "event", d.Event.EventID, "error", err)
+	}
+	if len(msgs) > 0 {
+		slog.Info("resuming turn from checkpoint", "event", d.Event.EventID, "messages", len(msgs))
+	} else {
+		prior, _ := cw.Load(ctx, d.Event.ContextID)
+		msgs = append(prior, userMsgs...)
+	}
 
 	runCtx := registry.WithCorrelation(ctx, d.Event.CorrelationID)
 	runCtx = registry.WithContextID(runCtx, d.Event.ContextID)
-	resp, err := agt.Run(runCtx, msgs)
+
+	cp := agent.CheckpointFunc(func(ctx context.Context, m []agent.Message) error {
+		return cw.SaveTurn(ctx, d.Event.EventID, m)
+	})
+
+	resp, err := agt.Run(runCtx, msgs, cp)
 	if err != nil {
-		slog.Error("agent run failed", "agent", d.Event.AgentHash, "event", d.Event.EventID, "deliveries", d.Deliveries, "error", err)
+		if agent.IsTransient(err) {
+			slog.Warn("agent run transient failure, leaving pending for reclaim", "agent", d.Event.AgentHash, "event", d.Event.EventID, "deliveries", d.Deliveries, "error", err)
+			return
+		}
+		slog.Error("agent run failed, dead-lettering", "agent", d.Event.AgentHash, "event", d.Event.EventID, "deliveries", d.Deliveries, "error", err)
+		_ = cw.DropTurn(ctx, d.Event.EventID)
+		deadLetter(d, err.Error())
 		return
 	}
 
@@ -125,6 +144,7 @@ func (c *Consumer) handle(ctx context.Context, cw agent.ContextWindow, d Deliver
 		slog.Error("context window replace failed", "event", d.Event.EventID, "error", err)
 		return
 	}
+	_ = cw.DropTurn(ctx, d.Event.EventID)
 
 	if err := d.Ack(); err != nil {
 		slog.Error("ack failed", "event", d.Event.EventID, "error", err)

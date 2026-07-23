@@ -8,6 +8,31 @@ import (
 
 var ErrDenied = errors.New("gate denied")
 
+type TransientError struct{ Err error }
+
+func (e *TransientError) Error() string { return e.Err.Error() }
+func (e *TransientError) Unwrap() error { return e.Err }
+
+func Transient(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &TransientError{Err: err}
+}
+
+func IsTransient(err error) bool {
+	var t *TransientError
+	return errors.As(err, &t)
+}
+
+type Checkpoint interface {
+	Save(ctx context.Context, msgs []Message) error
+}
+
+type CheckpointFunc func(ctx context.Context, msgs []Message) error
+
+func (f CheckpointFunc) Save(ctx context.Context, msgs []Message) error { return f(ctx, msgs) }
+
 type ToolCall struct {
 	ID    string
 	Name  string

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -9,6 +10,18 @@ import (
 
 	"github.com/peiblow/avm/agent"
 )
+
+func isTransientStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
 
 func clientTimeout() time.Duration {
 	if v := os.Getenv("LLM_TIMEOUT_SECONDS"); v != "" {
